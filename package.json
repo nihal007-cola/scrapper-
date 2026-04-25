@@ -1,7 +1,12 @@
 {
-  "name": "echospaces-scraper",
+  "name": "scrapper",
   "version": "1.0.0",
+  "description": "Full site scraper for echospaces",
+  "main": "scraper.js",
+  "scripts": {
+    "start": "node scraper.js"
+  },
   "dependencies": {
-    "playwright": "^1.40.0"
+    "puppeteer": "^22.0.0"
   }
 }

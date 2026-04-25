@@ -16,50 +16,60 @@ const BASE = "https://echospaces.in";
 
   let DB = [];
 
+  console.log("🚀 Scraper started...");
+
   while (queue.length > 0) {
     const url = queue.shift();
+
     if (visited.has(url)) continue;
     visited.add(url);
 
     try {
-      console.log("Visiting:", url);
+      console.log("\n🌐 Visiting:", url);
 
+      // 🔥 FIXED LOAD STRATEGY
       await page.goto(url, {
-        waitUntil: "networkidle",   // 🔥 CRITICAL FIX
+        waitUntil: "domcontentloaded",
         timeout: 60000
       });
 
-      // 🔥 WAIT FOR REAL CONTENT
+      // 🔥 EXTRA WAIT FOR JS RENDER
       await page.waitForTimeout(5000);
 
-      // 🔥 SCROLL TO LOAD LAZY CONTENT
+      // 🔥 SCROLL (loads lazy content)
       await autoScroll(page);
 
-      // 🔥 CLICK ALL BUTTONS (simulate user)
+      // 🔥 CLICK ALL BUTTONS (simulate real user)
       const buttons = await page.$$("button");
       for (const btn of buttons) {
         try {
           await btn.click({ timeout: 1000 });
-          await page.waitForTimeout(1000);
+          await page.waitForTimeout(800);
         } catch {}
       }
 
+      // 🔥 DEBUG PAGE SIZE
+      const html = await page.content();
+      console.log("📄 Page size:", html.length);
+
+      // 🔥 EXTRACT EVERYTHING
       const data = await page.evaluate(() => {
-        const getText = (el) => el.innerText?.trim() || "";
+        const clean = (t) => t?.trim().replace(/\s+/g, " ") || "";
 
         const links = Array.from(document.querySelectorAll("a"))
           .map(a => ({
-            text: getText(a),
+            text: clean(a.innerText),
             href: a.href
           }))
           .filter(l => l.href);
 
         const buttons = Array.from(document.querySelectorAll("button"))
-          .map(b => getText(b))
+          .map(b => clean(b.innerText))
           .filter(Boolean);
 
-        const inputs = Array.from(document.querySelectorAll("input"))
+        const inputs = Array.from(document.querySelectorAll("input, textarea, select"))
           .map(i => ({
+            tag: i.tagName,
             name: i.name,
             type: i.type,
             placeholder: i.placeholder
@@ -71,9 +81,9 @@ const BASE = "https://echospaces.in";
             method: f.method
           }));
 
-        const textBlocks = Array.from(document.querySelectorAll("div, p, span"))
-          .map(el => getText(el))
-          .filter(t => t.length > 30 && t.length < 1000);
+        const textBlocks = Array.from(document.querySelectorAll("h1,h2,h3,h4,p,span,div"))
+          .map(el => clean(el.innerText))
+          .filter(t => t.length > 40 && t.length < 1000);
 
         return {
           title: document.title,
@@ -86,27 +96,35 @@ const BASE = "https://echospaces.in";
         };
       });
 
+      console.log("🔗 Links found:", data.links.length);
+
       DB.push(data);
 
-      // 🔥 QUEUE INTERNAL LINKS
+      // 🔥 ADD NEW LINKS TO QUEUE
       data.links.forEach(l => {
-        if (l.href.startsWith(BASE) && !visited.has(l.href)) {
+        if (
+          l.href.startsWith(BASE) &&
+          !visited.has(l.href) &&
+          !queue.includes(l.href)
+        ) {
           queue.push(l.href);
         }
       });
 
     } catch (err) {
-      console.log("Failed:", url, err.message);
+      console.log("❌ Failed:", url, err.message);
     }
   }
 
+  // 🔥 SAVE FINAL DB
   fs.writeFileSync("db.json", JSON.stringify(DB, null, 2));
 
-  await browser.close();
+  console.log("\n✅ DONE — Full site scraped");
 
-  console.log("FULL SITE + INTERACTIONS CAPTURED");
+  await browser.close();
 })();
 
+// 🔥 AUTO SCROLL FUNCTION
 async function autoScroll(page) {
   await page.evaluate(async () => {
     await new Promise(resolve => {

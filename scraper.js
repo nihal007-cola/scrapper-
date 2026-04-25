@@ -1,107 +1,96 @@
 const { chromium } = require('playwright');
 const fs = require('fs');
 
+const BASE = "https://echospaces.in";
+
 (async () => {
-  const browser = await chromium.launch({
-    args: ["--no-sandbox"]
-  });
-
-  const context = await browser.newContext({
-    userAgent:
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
-  });
-
+  const browser = await chromium.launch({ args: ["--no-sandbox"] });
+  const context = await browser.newContext();
   const page = await context.newPage();
 
-  let DB = {
-    locations: []
-  };
+  let visited = new Set();
+  let queue = [BASE];
 
-  console.log("Opening site...");
+  let DB = [];
 
-  await page.goto("https://echospaces.in", {
-    waitUntil: "domcontentloaded",
-    timeout: 120000
-  });
+  while (queue.length > 0) {
+    const url = queue.shift();
+    if (visited.has(url)) continue;
+    visited.add(url);
 
-  await page.waitForTimeout(5000);
+    try {
+      console.log("Visiting:", url);
 
-  // 🔥 STEP 1: FIND LOCATION PAGE
-  console.log("Finding location page...");
+      await page.goto(url, {
+        waitUntil: "domcontentloaded",
+        timeout: 60000
+      });
 
-  const links = await page.$$eval('a', as =>
-    as.map(a => ({
-      href: a.href,
-      text: a.innerText.toLowerCase()
-    }))
-  );
+      await page.waitForTimeout(3000);
 
-  const locationLink = links.find(l =>
-    l.text.includes("location")
-  );
+      const data = await page.evaluate(() => {
+        const links = Array.from(document.querySelectorAll("a"))
+          .map(a => ({
+            text: a.innerText.trim(),
+            href: a.href
+          }))
+          .filter(l => l.href.startsWith("http"));
 
-  if (locationLink) {
-    console.log("Opening location page:", locationLink.href);
-    await page.goto(locationLink.href, {
-      waitUntil: "domcontentloaded",
-      timeout: 120000
-    });
-  } else {
-    console.log("Location link not found — continuing homepage scrape");
+        const buttons = Array.from(document.querySelectorAll("button"))
+          .map(b => b.innerText.trim())
+          .filter(Boolean);
+
+        const inputs = Array.from(document.querySelectorAll("input"))
+          .map(i => ({
+            name: i.name,
+            type: i.type,
+            placeholder: i.placeholder
+          }));
+
+        const forms = Array.from(document.querySelectorAll("form"))
+          .map(f => ({
+            action: f.action,
+            method: f.method
+          }));
+
+        const ctas = Array.from(document.querySelectorAll("a, button"))
+          .map(el => el.innerText.trim())
+          .filter(t =>
+            t.toLowerCase().includes("buy") ||
+            t.toLowerCase().includes("get") ||
+            t.toLowerCase().includes("quote") ||
+            t.toLowerCase().includes("start") ||
+            t.toLowerCase().includes("pay")
+          );
+
+        return {
+          title: document.title,
+          url: window.location.href,
+          links,
+          buttons,
+          inputs,
+          forms,
+          ctas
+        };
+      });
+
+      DB.push(data);
+
+      // enqueue internal links
+      data.links.forEach(l => {
+        if (l.href.startsWith(BASE) && !visited.has(l.href)) {
+          queue.push(l.href);
+        }
+      });
+
+    } catch (err) {
+      console.log("Failed:", url);
+    }
   }
 
-  await page.waitForTimeout(5000);
-
-  // 🔥 SCROLL
-  await autoScroll(page);
-
-  // 🔥 EXTRACT DATA
-  console.log("Extracting data...");
-
-  const data = await page.evaluate(() => {
-    let results = [];
-
-    document.querySelectorAll("div").forEach(el => {
-      const text = el.innerText;
-
-      if (
-        text &&
-        text.toLowerCase().includes("price")
-      ) {
-        results.push({
-          text: text.trim()
-        });
-      }
-    });
-
-    return results;
-  });
-
-  DB.locations.push(...data);
-
-  // 🔥 SAVE
   fs.writeFileSync("db.json", JSON.stringify(DB, null, 2));
 
   await browser.close();
 
-  console.log("DONE");
+  console.log("FULL STRUCTURE CAPTURED");
 })();
-
-async function autoScroll(page) {
-  await page.evaluate(async () => {
-    await new Promise(resolve => {
-      let totalHeight = 0;
-      let distance = 400;
-
-      let timer = setInterval(() => {
-        window.scrollBy(0, distance);
-        totalHeight += distance;
-
-        if (totalHeight >= document.body.scrollHeight) {
-          clearInterval(timer);
-          resolve();
-        }
-      }, 200);
-    });
-  });
-}

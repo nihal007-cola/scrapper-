@@ -6,8 +6,12 @@ const MAX_PAGES = 80;
 
 (async () => {
   const browser = await chromium.launch({
-    headless: false, // 🔥 important for avoiding bot blocks
-    args: ["--no-sandbox", "--disable-blink-features=AutomationControlled"]
+    headless: true, // ✅ required for GitHub
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-blink-features=AutomationControlled"
+    ]
   });
 
   const context = await browser.newContext({
@@ -18,6 +22,7 @@ const MAX_PAGES = 80;
 
   const page = await context.newPage();
 
+  // stealth fix
   await page.addInitScript(() => {
     Object.defineProperty(navigator, 'webdriver', {
       get: () => false
@@ -28,7 +33,7 @@ const MAX_PAGES = 80;
   let queue = [BASE];
   let DB = [];
 
-  console.log("🚀 STARTING FULL SITE SCRAPER");
+  console.log("🚀 STARTING SCRAPER");
 
   while (queue.length > 0 && visited.size < MAX_PAGES) {
     const url = queue.shift();
@@ -37,44 +42,34 @@ const MAX_PAGES = 80;
     visited.add(url);
 
     try {
-      console.log("\n🌐 Visiting:", url);
+      console.log("🌐 Visiting:", url);
 
       await page.goto(url, {
         waitUntil: "networkidle",
         timeout: 60000
       });
 
-      await page.waitForLoadState("networkidle");
-
-      // wait for DOM + JS rendering
-      await page.waitForSelector("body", { timeout: 15000 });
       await page.waitForTimeout(5000);
 
-      // scroll to force lazy loading
       await autoScroll(page);
 
-      // trigger interactions
       await handleInteractions(page);
 
-      // debug screenshot
-      await page.screenshot({
-        path: `debug-${visited.size}.png`,
-        fullPage: true
-      });
-
       const html = await page.content();
-      console.log("📄 Page length:", html.length);
+      console.log("📄 HTML size:", html.length);
 
       const data = await page.evaluate(() => {
         const clean = (t) => t?.trim().replace(/\s+/g, " ") || "";
 
-        const getEmails = (text) =>
-          [...new Set(text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}/g) || [])];
-
-        const getPhones = (text) =>
-          [...new Set(text.match(/\+?\d[\d\s-]{8,}/g) || [])];
-
         const textContent = document.body.innerText;
+
+        const emails = [...new Set(
+          textContent.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}/g) || []
+        )];
+
+        const phones = [...new Set(
+          textContent.match(/\+?\d[\d\s-]{8,}/g) || []
+        )];
 
         const links = Array.from(document.querySelectorAll("a"))
           .map(a => ({
@@ -83,7 +78,7 @@ const MAX_PAGES = 80;
           }))
           .filter(l => l.href);
 
-        const buttons = Array.from(document.querySelectorAll("button, a.btn"))
+        const buttons = Array.from(document.querySelectorAll("button"))
           .map(b => clean(b.innerText))
           .filter(Boolean);
 
@@ -101,15 +96,9 @@ const MAX_PAGES = 80;
             method: f.method
           }));
 
-        const textBlocks = Array.from(document.querySelectorAll("h1,h2,h3,h4,p,span,div"))
+        const textBlocks = Array.from(document.querySelectorAll("h1,h2,h3,p,span"))
           .map(el => clean(el.innerText))
           .filter(t => t.length > 40 && t.length < 800);
-
-        const metaDescription =
-          document.querySelector('meta[name="description"]')?.content || "";
-
-        const metaKeywords =
-          document.querySelector('meta[name="keywords"]')?.content || "";
 
         return {
           title: document.title,
@@ -119,18 +108,14 @@ const MAX_PAGES = 80;
           inputs,
           forms,
           textBlocks,
-          emails: getEmails(textContent),
-          phones: getPhones(textContent),
-          meta: {
-            description: metaDescription,
-            keywords: metaKeywords
-          }
+          emails,
+          phones
         };
       });
 
       DB.push(data);
 
-      // enqueue internal links
+      // enqueue links
       data.links.forEach(l => {
         if (
           l.href.startsWith(BASE) &&
@@ -142,19 +127,19 @@ const MAX_PAGES = 80;
       });
 
     } catch (err) {
-      console.log("❌ Failed:", url, err.message);
+      console.log("❌ Error:", url, err.message);
     }
   }
 
   fs.writeFileSync("db.json", JSON.stringify(DB, null, 2));
 
-  console.log("\n✅ DONE — Total pages scraped:", DB.length);
+  console.log("✅ DONE:", DB.length, "pages");
 
   await browser.close();
 })();
 
 
-// 🔥 scroll full page
+// scroll
 async function autoScroll(page) {
   await page.evaluate(async () => {
     await new Promise(resolve => {
@@ -175,14 +160,14 @@ async function autoScroll(page) {
 }
 
 
-// 🔥 simulate user actions
+// interactions
 async function handleInteractions(page) {
   try {
     const buttons = await page.$$("button");
 
-    for (const btn of buttons.slice(0, 5)) {
+    for (const btn of buttons.slice(0, 3)) {
       try {
-        await btn.click({ timeout: 1000 });
+        await btn.click();
         await page.waitForTimeout(800);
       } catch {}
     }

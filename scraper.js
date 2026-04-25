@@ -4,21 +4,11 @@ const fs = require('fs');
 const BASE_URL = 'https://echospaces.in';
 const MAX_PAGES = 100;
 const NAVIGATION_TIMEOUT = 60000;
-const DELAY_BETWEEN_PAGES = 1500;
-const SCROLL_STEP = 300;
-const SCROLL_DELAY = 150;
-
-const PHONE_REGEX = /(?:\+91[-\s]?|0)?[6789]\d{9}|\+?\d{1,3}[-\s]?\d{3}[-\s]?\d{3}[-\s]?\d{4}/g;
-const EMAIL_REGEX = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
-const SOCIAL_DOMAINS = [
-  'facebook.com', 'twitter.com', 'x.com', 'instagram.com', 'linkedin.com',
-  'youtube.com', 'pinterest.com', 'tiktok.com', 'snapchat.com', 'reddit.com',
-  'whatsapp.com', 'wa.me', 'telegram.org', 't.me', 'discord.gg', 'discord.com'
-];
+const PAGE_GOTO_OPTIONS = { waitUntil: 'domcontentloaded', timeout: NAVIGATION_TIMEOUT };
 
 const visited = new Set();
 const queue = [BASE_URL];
-const results = [];
+const pagesData = [];
 const graph = [];
 let pageCount = 0;
 
@@ -26,7 +16,6 @@ function normalizeUrl(url) {
   try {
     const u = new URL(url);
     u.hash = '';
-    u.searchParams.sort();
     return u.href.replace(/\/$/, '');
   } catch {
     return url;
@@ -35,112 +24,96 @@ function normalizeUrl(url) {
 
 function isInternal(url) {
   try {
-    const u = new URL(url);
-    return u.hostname === new URL(BASE_URL).hostname;
+    return new URL(url).hostname === new URL(BASE_URL).hostname;
   } catch {
     return false;
   }
 }
 
 function extractEmails(text) {
-  const matches = text.match(EMAIL_REGEX);
+  const regex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+  const matches = text.match(regex);
   return matches ? [...new Set(matches.map(e => e.toLowerCase()))] : [];
 }
 
 function extractPhones(text) {
-  const matches = text.match(PHONE_REGEX);
+  const regex = /(?:\+91[-\s]?|0)?[6789]\d{9}|\+?\d{1,3}[-\s]?\d{3}[-\s]?\d{3}[-\s]?\d{4}/g;
+  const matches = text.match(regex);
   return matches ? [...new Set(matches.map(p => p.replace(/\s+/g, '')))] : [];
 }
 
-function extractSocialLinks(links) {
-  return links.filter(link => {
-    try {
-      const hostname = new URL(link.href).hostname.toLowerCase();
-      return SOCIAL_DOMAINS.some(domain => hostname.includes(domain));
-    } catch {
-      return false;
-    }
-  }).map(l => ({ text: l.text, href: l.href }));
-}
+const SOCIAL_DOMAINS = [
+  'facebook.com', 'twitter.com', 'x.com', 'instagram.com', 'linkedin.com',
+  'youtube.com', 'pinterest.com', 'tiktok.com', 'snapchat.com', 'reddit.com',
+  'whatsapp.com', 'wa.me', 'telegram.org', 't.me', 'discord.gg', 'discord.com'
+];
 
-function cleanText(text) {
-  if (!text) return '';
-  return text.trim().replace(/\s+/g, ' ');
-}
-
-function isMeaningfulText(text) {
-  const cleaned = cleanText(text);
-  if (cleaned.length < 25) return false;
-  const garbagePatterns = [
-    /^[\s\W]+$/, /^cookie/i, /^accept/i, /^subscribe/i,
-    /^loading/i, /^please wait/i, /^all rights reserved/i,
-    /^\d{4}\s*©/i, /^privacy policy$/i, /^terms of service$/i
-  ];
-  return !garbagePatterns.some(p => p.test(cleaned));
+function isSocialLink(link) {
+  try {
+    const host = new URL(link.href).hostname.toLowerCase();
+    return SOCIAL_DOMAINS.some(d => host.includes(d));
+  } catch {
+    return false;
+  }
 }
 
 async function autoScroll(page) {
-  await page.evaluate(async (step, delay) => {
-    await new Promise((resolve) => {
+  await page.evaluate(async () => {
+    await new Promise(resolve => {
       let totalHeight = 0;
-      const distance = step;
+      const distance = 200;
       const timer = setInterval(() => {
-        let scrollHeight = document.body.scrollHeight;
         window.scrollBy(0, distance);
         totalHeight += distance;
-        if (totalHeight >= scrollHeight) {
+        if (totalHeight >= document.body.scrollHeight) {
           clearInterval(timer);
           resolve();
         }
-      }, delay);
+      }, 100);
     });
-  }, SCROLL_STEP, SCROLL_DELAY);
-  await page.waitForTimeout(500);
-  await page.evaluate(() => window.scrollTo(0, 0));
+  });
   await page.waitForTimeout(300);
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.waitForTimeout(200);
 }
 
-async function handleInteractions(page) {
-  const clickableSelectors = [
-    'button:has-text("View More")',
-    'button:has-text("Load More")',
-    'button:has-text("Show More")',
-    'button:has-text("Expand")',
-    'a:has-text("View More")',
-    'a:has-text("Load More")',
-    'a:has-text("Next")',
-    '[role="button"]:has-text("More")',
-    '.load-more', '.show-more', '.view-more',
-    '[data-action="load-more"]', '[data-action="expand"]'
-  ];
-
-  for (const selector of clickableSelectors) {
+async function clickElements(page, selectors) {
+  for (const sel of selectors) {
     try {
-      const elements = page.locator(selector);
-      const count = await elements.count();
+      const elems = page.locator(sel);
+      const count = await elems.count();
       for (let i = 0; i < count && i < 3; i++) {
-        try {
-          const el = elements.nth(i);
-          if (await el.isVisible({ timeout: 1000 })) {
-            await el.click({ timeout: 2000 });
-            await page.waitForTimeout(1000);
-          }
-        } catch {}
+        const el = elems.nth(i);
+        if (await el.isVisible({ timeout: 1000 })) {
+          await el.click({ timeout: 2000 });
+          await page.waitForTimeout(800);
+        }
       }
     } catch {}
   }
+}
+
+async function handleInteractions(page) {
+  const loadMoreSelectors = [
+    'button:has-text("View More")',
+    'button:has-text("Load More")',
+    'button:has-text("Show More")',
+    'a:has-text("View More")',
+    'a:has-text("Load More")',
+    '[role="button"]:has-text("More")',
+    '.load-more', '.show-more', '.view-more'
+  ];
+  await clickElements(page, loadMoreSelectors);
 
   const formTriggers = [
     'button:has-text("Get Quote")',
     'button:has-text("Contact")',
-    'button:has-text("Enquire")',
     'a:has-text("Get Quote")',
     'a:has-text("Enquire Now")'
   ];
-
-  for (const selector of formTriggers) {
+  for (const sel of formTriggers) {
     try {
-      const el = page.locator(selector).first();
+      const el = page.locator(sel).first();
       if (await el.isVisible({ timeout: 1000 })) {
         await el.click({ timeout: 2000 });
         await page.waitForTimeout(500);
@@ -150,37 +123,29 @@ async function handleInteractions(page) {
   }
 }
 
-async function extractData(page) {
-  await page.waitForTimeout(500);
-
-  const data = await page.evaluate((socialDomains) => {
-    const clean = (t) => t?.trim().replace(/\s+/g, ' ') || '';
+async function extractPageData(page) {
+  const data = await page.evaluate(() => {
+    const clean = t => t?.trim().replace(/\s+/g, ' ') || '';
 
     const links = Array.from(document.querySelectorAll('a[href]'))
-      .map(a => ({
-        text: clean(a.textContent).substring(0, 200),
-        href: a.href
-      }))
+      .map(a => ({ text: clean(a.textContent).substring(0, 200), href: a.href }))
       .filter(l => l.href && l.href.startsWith('http'));
 
     const buttons = Array.from(document.querySelectorAll('button, [role="button"], input[type="button"], input[type="submit"]'))
       .map(b => clean(b.textContent || b.value))
-      .filter(t => t.length > 0 && t.length < 200);
+      .filter(Boolean);
 
     const inputs = Array.from(document.querySelectorAll('input:not([type="hidden"]), textarea, select'))
-      .map(i => ({
-        name: i.name || '',
-        type: i.type || i.tagName.toLowerCase(),
-        placeholder: i.placeholder || '',
-        label: ''
+      .map(el => ({
+        name: el.name || '',
+        type: el.type || el.tagName.toLowerCase(),
+        placeholder: el.placeholder || ''
       }));
 
     const forms = Array.from(document.querySelectorAll('form'))
       .map(f => ({
         action: f.action || '',
-        method: (f.method || 'get').toLowerCase(),
-        id: f.id || '',
-        className: f.className || ''
+        method: (f.method || 'get').toLowerCase()
       }));
 
     const headings = Array.from(document.querySelectorAll('h1, h2, h3, h4'))
@@ -195,24 +160,18 @@ async function extractData(page) {
       .map(el => clean(el.textContent))
       .filter(t => t.length > 20);
 
-    const divText = Array.from(document.querySelectorAll('div, section, article, main, aside, span'))
-      .map(el => {
-        if (el.children.length === 0) {
-          return clean(el.textContent);
-        }
-        return '';
-      })
+    const divTexts = Array.from(document.querySelectorAll('div, section, article, main, aside, span'))
+      .filter(el => el.children.length === 0)
+      .map(el => clean(el.textContent))
       .filter(t => t.length > 40);
 
-    const allVisibleText = [...new Set([...headings, ...paragraphs, ...listItems, ...divText])]
-      .filter(t => t.length > 30)
-      .filter(t => !t.startsWith('©') && !t.includes('function('));
+    const allText = [...new Set([...headings, ...paragraphs, ...listItems, ...divTexts])]
+      .filter(t => t.length > 30 && !t.startsWith('©') && !t.includes('function('));
 
-    const scripts = Array.from(document.querySelectorAll('script[src]'))
-      .map(s => s.src);
+    const scripts = Array.from(document.querySelectorAll('script[src]')).map(s => s.src);
 
-    const metaDescription = document.querySelector('meta[name="description"]')?.content || '';
-    const metaKeywords = document.querySelector('meta[name="keywords"]')?.content || '';
+    const metaDesc = document.querySelector('meta[name="description"]')?.content || '';
+    const metaKeys = document.querySelector('meta[name="keywords"]')?.content || '';
 
     return {
       title: document.title,
@@ -221,91 +180,70 @@ async function extractData(page) {
       buttons: [...new Set(buttons)],
       inputs,
       forms,
-      textBlocks: allVisibleText,
+      textBlocks: allText,
       scripts,
-      meta: {
-        description: clean(metaDescription),
-        keywords: clean(metaKeywords)
-      }
+      meta: { description: clean(metaDesc), keywords: clean(metaKeys) }
     };
-  }, SOCIAL_DOMAINS);
+  });
 
-  const pageText = [
-    data.title,
-    ...data.textBlocks,
-    ...data.buttons,
+  const pageText = [data.title, ...data.textBlocks, ...data.buttons,
     ...data.inputs.map(i => `${i.name} ${i.placeholder}`),
-    data.meta.description,
-    data.meta.keywords
-  ].join(' ');
+    data.meta.description, data.meta.keywords].join(' ');
 
   data.emails = extractEmails(pageText);
   data.phoneNumbers = extractPhones(pageText);
-  data.socialLinks = extractSocialLinks(data.links);
+  data.socialLinks = data.links.filter(isSocialLink).map(l => ({ text: l.text, href: l.href }));
 
-  data.textBlocks = data.textBlocks.filter(isMeaningfulText);
-
+  data.textBlocks = data.textBlocks.filter(t => t.length > 30);
   return data;
 }
 
-async function crawlPage(browser, currentUrl, fromUrl) {
-  if (visited.has(normalizeUrl(currentUrl))) return;
+async function crawlPage(browser, url, fromUrl) {
+  const normalized = normalizeUrl(url);
+  if (visited.has(normalized)) return;
+  if (!isInternal(url)) return;
   if (pageCount >= MAX_PAGES) return;
-  if (!isInternal(currentUrl)) return;
 
-  visited.add(normalizeUrl(currentUrl));
+  visited.add(normalized);
   pageCount++;
 
   const context = await browser.newContext({
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    viewport: { width: 1920, height: 1080 },
-    deviceScaleFactor: 1
+    viewport: { width: 1920, height: 1080 }
   });
-
   const page = await context.newPage();
 
   await page.addInitScript(() => {
     Object.defineProperty(navigator, 'webdriver', { get: () => false });
-    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
     window.chrome = { runtime: {} };
   });
 
   try {
-    console.log(`[${pageCount}/${MAX_PAGES}] Visiting: ${currentUrl}`);
-
-    await page.goto(currentUrl, {
-      waitUntil: 'networkidle',
-      timeout: NAVIGATION_TIMEOUT
-    });
-
-    await page.waitForTimeout(DELAY_BETWEEN_PAGES);
+    console.log(`[${pageCount}/${MAX_PAGES}] ${url}`);
+    await page.goto(url, PAGE_GOTO_OPTIONS);
+    await page.waitForTimeout(2000);
     await autoScroll(page);
     await handleInteractions(page);
-    await page.waitForTimeout(1000);
+    await page.waitForTimeout(500);
     await autoScroll(page);
 
-    const data = await extractData(page);
-    results.push(data);
+    const data = await extractPageData(page);
+    pagesData.push(data);
 
     if (fromUrl) {
-      graph.push({
-        from: fromUrl,
-        to: currentUrl
-      });
+      graph.push({ from: fromUrl, to: url });
     }
 
     for (const link of data.links) {
       if (isInternal(link.href)) {
-        const normalized = normalizeUrl(link.href);
-        if (!visited.has(normalized) && queue.length + visited.size < MAX_PAGES * 2) {
+        const norm = normalizeUrl(link.href);
+        if (!visited.has(norm) && queue.length < MAX_PAGES * 3) {
           queue.push(link.href);
         }
       }
     }
-
-  } catch (error) {
-    console.error(`Failed: ${currentUrl} - ${error.message}`);
+  } catch (err) {
+    console.error(`Error on ${url}: ${err.message}`);
   } finally {
     await context.close();
   }
@@ -314,14 +252,7 @@ async function crawlPage(browser, currentUrl, fromUrl) {
 (async () => {
   const browser = await chromium.launch({
     headless: true,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-accelerated-2d-canvas',
-      '--disable-gpu',
-      '--disable-blink-features=AutomationControlled'
-    ]
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
   });
 
   try {
@@ -329,31 +260,32 @@ async function crawlPage(browser, currentUrl, fromUrl) {
 
     while (queue.length > 0 && pageCount < MAX_PAGES) {
       const nextUrl = queue.shift();
-      const normalized = normalizeUrl(nextUrl);
-
-      if (!visited.has(normalized) && isInternal(nextUrl)) {
+      const norm = normalizeUrl(nextUrl);
+      if (!visited.has(norm) && isInternal(nextUrl)) {
         await crawlPage(browser, nextUrl, null);
       }
     }
-  } catch (error) {
-    console.error('Crawler error:', error.message);
   } finally {
+    const allEmails = [...new Set(pagesData.flatMap(p => p.emails))];
+    const allPhones = [...new Set(pagesData.flatMap(p => p.phoneNumbers))];
+    const allSocial = [...new Set(pagesData.flatMap(p => p.socialLinks.map(s => s.href)))];
+
     const output = {
       baseUrl: BASE_URL,
       crawledAt: new Date().toISOString(),
-      totalPages: results.length,
-      pages: results,
+      totalPages: pagesData.length,
+      pages: pagesData,
       graph: graph,
       summary: {
-        totalEmails: [...new Set(results.flatMap(r => r.emails))],
-        totalPhones: [...new Set(results.flatMap(r => r.phoneNumbers))],
-        totalSocialLinks: [...new Set(results.flatMap(r => r.socialLinks.map(s => s.href)))],
-        allPages: results.map(r => r.url)
+        totalEmails: allEmails,
+        totalPhones: allPhones,
+        totalSocialLinks: allSocial,
+        allPages: pagesData.map(p => p.url)
       }
     };
 
     fs.writeFileSync('db.json', JSON.stringify(output, null, 2));
-    console.log(`\nDone. ${results.length} pages crawled. Output saved to db.json`);
+    console.log(`\nDone. ${pagesData.length} pages saved to db.json`);
     await browser.close();
   }
 })();

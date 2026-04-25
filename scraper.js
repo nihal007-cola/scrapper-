@@ -5,131 +5,108 @@ const BASE = "https://echospaces.in";
 
 (async () => {
   const browser = await chromium.launch({
-    args: ["--no-sandbox"]
+    headless: true,
+    args: [
+      "--no-sandbox",
+      "--disable-blink-features=AutomationControlled"
+    ]
   });
 
-  const context = await browser.newContext();
+  const context = await browser.newContext({
+    userAgent:
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    viewport: { width: 1366, height: 768 }
+  });
+
   const page = await context.newPage();
 
-  let visited = new Set();
-  let queue = [BASE];
+  // 🔥 Hide automation
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', {
+      get: () => false
+    });
+  });
 
   let DB = [];
 
-  console.log("🚀 Scraper started...");
+  try {
+    console.log("Opening site...");
 
-  while (queue.length > 0) {
-    const url = queue.shift();
+    await page.goto(BASE, {
+      waitUntil: "domcontentloaded",
+      timeout: 60000
+    });
 
-    if (visited.has(url)) continue;
-    visited.add(url);
+    // 🔥 simulate human behavior
+    await page.mouse.move(100, 100);
+    await page.waitForTimeout(2000);
+    await page.mouse.move(300, 300);
+    await page.waitForTimeout(2000);
 
-    try {
-      console.log("\n🌐 Visiting:", url);
+    await autoScroll(page);
 
-      // 🔥 FIXED LOAD STRATEGY
-      await page.goto(url, {
-        waitUntil: "domcontentloaded",
-        timeout: 60000
-      });
+    // 🔥 DEBUG
+    const html = await page.content();
+    console.log("PAGE LENGTH:", html.length);
 
-      // 🔥 EXTRA WAIT FOR JS RENDER
-      await page.waitForTimeout(5000);
+    const data = await page.evaluate(() => {
+      const clean = (t) => t?.trim().replace(/\s+/g, " ") || "";
 
-      // 🔥 SCROLL (loads lazy content)
-      await autoScroll(page);
+      const links = Array.from(document.querySelectorAll("a"))
+        .map(a => ({
+          text: clean(a.innerText),
+          href: a.href
+        }));
 
-      // 🔥 CLICK ALL BUTTONS (simulate real user)
-      const buttons = await page.$$("button");
-      for (const btn of buttons) {
-        try {
-          await btn.click({ timeout: 1000 });
-          await page.waitForTimeout(800);
-        } catch {}
-      }
+      const buttons = Array.from(document.querySelectorAll("button"))
+        .map(b => clean(b.innerText));
 
-      // 🔥 DEBUG PAGE SIZE
-      const html = await page.content();
-      console.log("📄 Page size:", html.length);
+      const inputs = Array.from(document.querySelectorAll("input"))
+        .map(i => ({
+          name: i.name,
+          type: i.type,
+          placeholder: i.placeholder
+        }));
 
-      // 🔥 EXTRACT EVERYTHING
-      const data = await page.evaluate(() => {
-        const clean = (t) => t?.trim().replace(/\s+/g, " ") || "";
+      const forms = Array.from(document.querySelectorAll("form"))
+        .map(f => ({
+          action: f.action,
+          method: f.method
+        }));
 
-        const links = Array.from(document.querySelectorAll("a"))
-          .map(a => ({
-            text: clean(a.innerText),
-            href: a.href
-          }))
-          .filter(l => l.href);
+      const textBlocks = Array.from(document.querySelectorAll("h1,h2,h3,p,span"))
+        .map(el => clean(el.innerText))
+        .filter(t => t.length > 20);
 
-        const buttons = Array.from(document.querySelectorAll("button"))
-          .map(b => clean(b.innerText))
-          .filter(Boolean);
+      return {
+        title: document.title,
+        url: window.location.href,
+        links,
+        buttons,
+        inputs,
+        forms,
+        textBlocks
+      };
+    });
 
-        const inputs = Array.from(document.querySelectorAll("input, textarea, select"))
-          .map(i => ({
-            tag: i.tagName,
-            name: i.name,
-            type: i.type,
-            placeholder: i.placeholder
-          }));
+    DB.push(data);
 
-        const forms = Array.from(document.querySelectorAll("form"))
-          .map(f => ({
-            action: f.action,
-            method: f.method
-          }));
-
-        const textBlocks = Array.from(document.querySelectorAll("h1,h2,h3,h4,p,span,div"))
-          .map(el => clean(el.innerText))
-          .filter(t => t.length > 40 && t.length < 1000);
-
-        return {
-          title: document.title,
-          url: window.location.href,
-          links,
-          buttons,
-          inputs,
-          forms,
-          textBlocks
-        };
-      });
-
-      console.log("🔗 Links found:", data.links.length);
-
-      DB.push(data);
-
-      // 🔥 ADD NEW LINKS TO QUEUE
-      data.links.forEach(l => {
-        if (
-          l.href.startsWith(BASE) &&
-          !visited.has(l.href) &&
-          !queue.includes(l.href)
-        ) {
-          queue.push(l.href);
-        }
-      });
-
-    } catch (err) {
-      console.log("❌ Failed:", url, err.message);
-    }
+  } catch (err) {
+    console.log("ERROR:", err.message);
   }
 
-  // 🔥 SAVE FINAL DB
   fs.writeFileSync("db.json", JSON.stringify(DB, null, 2));
 
-  console.log("\n✅ DONE — Full site scraped");
-
   await browser.close();
+
+  console.log("DONE");
 })();
 
-// 🔥 AUTO SCROLL FUNCTION
 async function autoScroll(page) {
   await page.evaluate(async () => {
     await new Promise(resolve => {
       let totalHeight = 0;
-      const distance = 300;
+      const distance = 200;
 
       const timer = setInterval(() => {
         window.scrollBy(0, distance);
@@ -139,7 +116,7 @@ async function autoScroll(page) {
           clearInterval(timer);
           resolve();
         }
-      }, 200);
+      }, 100);
     });
   });
 }

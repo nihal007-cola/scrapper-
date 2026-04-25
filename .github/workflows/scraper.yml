@@ -1,0 +1,36 @@
+name: Run Scraper
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 0 * * *"  # runs daily
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Setup Node
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps
+
+      - name: Run scraper
+        run: node scraper.js
+
+      - name: Commit results
+        run: |
+          git config --global user.name "bot"
+          git config --global user.email "bot@github.com"
+          git add db.json
+          git commit -m "update data" || echo "no changes"
+          git push

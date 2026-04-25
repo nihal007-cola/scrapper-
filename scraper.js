@@ -6,7 +6,7 @@ const MAX_PAGES = 80;
 
 (async () => {
   const browser = await chromium.launch({
-    headless: true,
+    headless: false, // 🔥 important for avoiding bot blocks
     args: ["--no-sandbox", "--disable-blink-features=AutomationControlled"]
   });
 
@@ -40,15 +40,27 @@ const MAX_PAGES = 80;
       console.log("\n🌐 Visiting:", url);
 
       await page.goto(url, {
-        waitUntil: "domcontentloaded",
+        waitUntil: "networkidle",
         timeout: 60000
       });
 
-      await page.waitForTimeout(3000);
+      await page.waitForLoadState("networkidle");
 
+      // wait for DOM + JS rendering
+      await page.waitForSelector("body", { timeout: 15000 });
+      await page.waitForTimeout(5000);
+
+      // scroll to force lazy loading
       await autoScroll(page);
 
+      // trigger interactions
       await handleInteractions(page);
+
+      // debug screenshot
+      await page.screenshot({
+        path: `debug-${visited.size}.png`,
+        fullPage: true
+      });
 
       const html = await page.content();
       console.log("📄 Page length:", html.length);
@@ -163,7 +175,7 @@ async function autoScroll(page) {
 }
 
 
-// 🔥 simulate basic user actions
+// 🔥 simulate user actions
 async function handleInteractions(page) {
   try {
     const buttons = await page.$$("button");

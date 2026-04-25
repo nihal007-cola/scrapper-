@@ -4,7 +4,12 @@ const fs = require('fs');
 (async () => {
   const browser = await chromium.launch({
     headless: true,
-    args: ["--no-sandbox"]
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu"
+    ]
   });
 
   const context = await browser.newContext();
@@ -14,44 +19,48 @@ const fs = require('fs');
 
   console.log("🚀 Starting API capture...");
 
-  // 🔥 CAPTURE ALL NETWORK RESPONSES
+  // 🔥 Capture API responses
   page.on('response', async (response) => {
     try {
       const url = response.url();
+      const contentType = response.headers()["content-type"] || "";
 
-      // filter useful APIs only
       if (
-        url.includes("api") ||
-        url.includes("location") ||
-        url.includes("search") ||
-        url.includes("data")
+        contentType.includes("application/json") &&
+        (
+          url.includes("api") ||
+          url.includes("location") ||
+          url.includes("search") ||
+          url.includes("data")
+        )
       ) {
-        const contentType = response.headers()["content-type"] || "";
+        const json = await response.json();
 
-        if (contentType.includes("application/json")) {
-          const json = await response.json();
+        console.log("📡 API HIT:", url);
 
-          console.log("📡 API HIT:", url);
-
-          DB.push({
-            url,
-            data: json
-          });
-        }
+        DB.push({
+          url,
+          data: json
+        });
       }
 
     } catch (e) {}
   });
 
-  await page.goto("https://echospaces.in", {
-    waitUntil: "networkidle",
-    timeout: 60000
-  });
+  // 🔥 SAFE NAVIGATION (FIXED)
+  try {
+    await page.goto("https://echospaces.in", {
+      waitUntil: "domcontentloaded",
+      timeout: 60000
+    });
+  } catch (e) {
+    console.log("⚠️ Navigation timeout — continuing...");
+  }
 
-  // wait for all lazy loads
+  // allow JS + APIs to load
   await page.waitForTimeout(8000);
 
-  // simulate interaction
+  // 🔥 simulate interactions (click buttons)
   try {
     const buttons = await page.$$("button");
     for (const btn of buttons.slice(0, 5)) {
@@ -62,7 +71,7 @@ const fs = require('fs');
     }
   } catch {}
 
-  // scroll
+  // 🔥 scroll page fully
   await page.evaluate(async () => {
     await new Promise(resolve => {
       let totalHeight = 0;
@@ -82,6 +91,7 @@ const fs = require('fs');
 
   await page.waitForTimeout(5000);
 
+  // 🔥 SAVE DATA
   fs.writeFileSync("db.json", JSON.stringify(DB, null, 2));
 
   console.log("✅ DONE. APIs captured:", DB.length);

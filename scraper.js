@@ -3,124 +3,152 @@ const fs = require('fs');
 
 (async () => {
   const browser = await chromium.launch({
-    args: ["--no-sandbox"]
+    headless: true,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage"
+    ]
   });
 
   const page = await browser.newPage();
+
+  // 🔥 Anti-timeout + stability
+  page.setDefaultNavigationTimeout(0);
+  page.setDefaultTimeout(0);
+
+  await page.setUserAgent(
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
+  );
 
   let DB = {
     locations: []
   };
 
   console.log("Opening site...");
-  await page.goto("https://echospaces.in", { timeout: 60000 });
 
-  await page.waitForTimeout(4000);
-
-  // 🔥 STEP 1: GO TO LOCATION PAGE
-  console.log("Navigating to location page...");
-
-  const links = await page.$$eval('a', as =>
-    as.map(a => ({ href: a.href, text: a.innerText }))
-  );
-
-  const locationLink = links.find(l =>
-    l.text.toLowerCase().includes("location")
-  );
-
-  if (locationLink) {
-    await page.goto(locationLink.href);
-  }
+  await page.goto("https://echospaces.in", {
+    waitUntil: "domcontentloaded",
+    timeout: 0
+  });
 
   await page.waitForTimeout(5000);
 
-  // 🔥 STEP 2: SCROLL FULL PAGE
-  await autoScroll(page);
+  // 🔥 STEP 1: FIND LOCATION PAGE
+  console.log("Finding location page...");
 
-  // 🔥 STEP 3: EXTRACT LOCATION CARDS
-  console.log("Extracting location data...");
-
-  const data = await page.evaluate(() => {
-    let results = [];
-
-    document.querySelectorAll("div").forEach(el => {
-      const text = el.innerText;
-
-      if (
-        text &&
-        text.includes("Prices") &&
-        text.length < 500
-      ) {
-        const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
-
-        results.push({
-          raw: text,
-          lines: lines
-        });
-      }
-    });
-
-    return results;
+  const locationLink = await page.evaluate(() => {
+    const links = Array.from(document.querySelectorAll("a"));
+    const match = links.find(a =>
+      a.innerText.toLowerCase().includes("location")
+    );
+    return match ? match.href : null;
   });
 
-  DB.locations.push(...data);
+  if (locationLink) {
+    console.log("Navigating to:", locationLink);
 
-  // 🔥 STEP 4: PAGINATION (TRY CLICK NEXT)
-  let hasNext = true;
+    await page.goto(locationLink, {
+      waitUntil: "domcontentloaded",
+      timeout: 0
+    });
 
-  while (hasNext) {
+    await page.waitForTimeout(5000);
+  } else {
+    console.log("Location page not found, staying on homepage.");
+  }
+
+  // 🔥 STEP 2: SCROLL
+  await autoScroll(page);
+
+  // 🔥 STEP 3: EXTRACT DATA
+  console.log("Extracting location data...");
+
+  const extractData = async () => {
+    return await page.evaluate(() => {
+      let results = [];
+
+      document.querySelectorAll("div").forEach(el => {
+        const text = el.innerText?.trim();
+
+        if (
+          text &&
+          text.toLowerCase().includes("price") &&
+          text.length < 600
+        ) {
+          const lines = text
+            .split("\n")
+            .map(l => l.trim())
+            .filter(Boolean);
+
+          results.push({
+            raw: text,
+            lines
+          });
+        }
+      });
+
+      return results;
+    });
+  };
+
+  DB.locations.push(...await extractData());
+
+  // 🔥 STEP 4: PAGINATION LOOP
+  console.log("Checking pagination...");
+
+  let safety = 0;
+
+  while (safety < 10) {
     try {
-      const nextBtn = await page.$("a:has-text('Next'), button:has-text('Next')");
+      const nextBtn = await page.locator("text=Next").first();
 
-      if (nextBtn) {
+      if (await nextBtn.count()) {
         console.log("Going to next page...");
-        await nextBtn.click();
+
+        await Promise.all([
+          page.waitForLoadState("domcontentloaded"),
+          nextBtn.click()
+        ]);
+
         await page.waitForTimeout(4000);
         await autoScroll(page);
 
-        const nextData = await page.evaluate(() => {
-          let results = [];
-
-          document.querySelectorAll("div").forEach(el => {
-            const text = el.innerText;
-
-            if (
-              text &&
-              text.includes("Prices") &&
-              text.length < 500
-            ) {
-              results.push(text);
-            }
-          });
-
-          return results;
-        });
-
+        const nextData = await extractData();
         DB.locations.push(...nextData);
 
+        safety++;
       } else {
-        hasNext = false;
+        break;
       }
-    } catch {
-      hasNext = false;
+    } catch (e) {
+      console.log("Pagination ended.");
+      break;
     }
   }
 
-  // 🔥 SAVE DATA
+  // 🔥 CLEAN DUPLICATES
+  DB.locations = Array.from(
+    new Map(DB.locations.map(i => [i.raw, i])).values()
+  );
+
+  // 🔥 SAVE FILE
   fs.writeFileSync("db.json", JSON.stringify(DB, null, 2));
 
-  await browser.close();
+  console.log(`DONE — ${DB.locations.length} entries saved.`);
 
-  console.log("DONE — locations extracted.");
+  await browser.close();
 })();
 
+
+// 🔥 SCROLL FUNCTION
 async function autoScroll(page) {
   await page.evaluate(async () => {
     await new Promise(resolve => {
       let totalHeight = 0;
-      let distance = 300;
+      const distance = 400;
 
-      let timer = setInterval(() => {
+      const timer = setInterval(() => {
         window.scrollBy(0, distance);
         totalHeight += distance;
 

@@ -4,7 +4,10 @@ const fs = require('fs');
 const BASE = "https://echospaces.in";
 
 (async () => {
-  const browser = await chromium.launch({ args: ["--no-sandbox"] });
+  const browser = await chromium.launch({
+    args: ["--no-sandbox"]
+  });
+
   const context = await browser.newContext();
   const page = await context.newPage();
 
@@ -22,22 +25,37 @@ const BASE = "https://echospaces.in";
       console.log("Visiting:", url);
 
       await page.goto(url, {
-        waitUntil: "domcontentloaded",
+        waitUntil: "networkidle",   // 🔥 CRITICAL FIX
         timeout: 60000
       });
 
-      await page.waitForTimeout(3000);
+      // 🔥 WAIT FOR REAL CONTENT
+      await page.waitForTimeout(5000);
+
+      // 🔥 SCROLL TO LOAD LAZY CONTENT
+      await autoScroll(page);
+
+      // 🔥 CLICK ALL BUTTONS (simulate user)
+      const buttons = await page.$$("button");
+      for (const btn of buttons) {
+        try {
+          await btn.click({ timeout: 1000 });
+          await page.waitForTimeout(1000);
+        } catch {}
+      }
 
       const data = await page.evaluate(() => {
+        const getText = (el) => el.innerText?.trim() || "";
+
         const links = Array.from(document.querySelectorAll("a"))
           .map(a => ({
-            text: a.innerText.trim(),
+            text: getText(a),
             href: a.href
           }))
-          .filter(l => l.href.startsWith("http"));
+          .filter(l => l.href);
 
         const buttons = Array.from(document.querySelectorAll("button"))
-          .map(b => b.innerText.trim())
+          .map(b => getText(b))
           .filter(Boolean);
 
         const inputs = Array.from(document.querySelectorAll("input"))
@@ -53,15 +71,9 @@ const BASE = "https://echospaces.in";
             method: f.method
           }));
 
-        const ctas = Array.from(document.querySelectorAll("a, button"))
-          .map(el => el.innerText.trim())
-          .filter(t =>
-            t.toLowerCase().includes("buy") ||
-            t.toLowerCase().includes("get") ||
-            t.toLowerCase().includes("quote") ||
-            t.toLowerCase().includes("start") ||
-            t.toLowerCase().includes("pay")
-          );
+        const textBlocks = Array.from(document.querySelectorAll("div, p, span"))
+          .map(el => getText(el))
+          .filter(t => t.length > 30 && t.length < 1000);
 
         return {
           title: document.title,
@@ -70,13 +82,13 @@ const BASE = "https://echospaces.in";
           buttons,
           inputs,
           forms,
-          ctas
+          textBlocks
         };
       });
 
       DB.push(data);
 
-      // enqueue internal links
+      // 🔥 QUEUE INTERNAL LINKS
       data.links.forEach(l => {
         if (l.href.startsWith(BASE) && !visited.has(l.href)) {
           queue.push(l.href);
@@ -84,7 +96,7 @@ const BASE = "https://echospaces.in";
       });
 
     } catch (err) {
-      console.log("Failed:", url);
+      console.log("Failed:", url, err.message);
     }
   }
 
@@ -92,5 +104,24 @@ const BASE = "https://echospaces.in";
 
   await browser.close();
 
-  console.log("FULL STRUCTURE CAPTURED");
+  console.log("FULL SITE + INTERACTIONS CAPTURED");
 })();
+
+async function autoScroll(page) {
+  await page.evaluate(async () => {
+    await new Promise(resolve => {
+      let totalHeight = 0;
+      const distance = 300;
+
+      const timer = setInterval(() => {
+        window.scrollBy(0, distance);
+        totalHeight += distance;
+
+        if (totalHeight >= document.body.scrollHeight) {
+          clearInterval(timer);
+          resolve();
+        }
+      }, 200);
+    });
+  });
+}
